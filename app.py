@@ -81,8 +81,8 @@ def load_data():
 
     if df.empty:
         raise ValueError(
-            "No data downloaded. Check your internet connection "
-            "or the PhonePe Pulse repository."
+            "No data downloaded. Check the internet connection "
+            "or PhonePe Pulse repository."
         )
 
     return (
@@ -96,6 +96,7 @@ def load_data():
 def train_model(df):
     data = df.copy()
 
+    # Create historical features separately for each state
     grouped = data.groupby("state")["transactions"]
 
     data["lag1"] = grouped.shift(1)
@@ -112,19 +113,24 @@ def train_model(df):
     ).copy()
 
     features = [
-        "state", "year", "quarter",
-        "lag1", "lag4", "rolling4"
+        "state",
+        "year",
+        "quarter",
+        "lag1",
+        "lag4",
+        "rolling4"
     ]
 
+    # Keep the latest four available quarters for testing
     last_period = data["period"].max()
     test_start = last_period - 3
 
-    train = data[data["period"] < test_start]
+    train = data[data["period"] < test_start].copy()
     test = data[data["period"] >= test_start].copy()
 
     if train.empty or test.empty:
         raise ValueError(
-            "Not enough historical data to train and test the model."
+            "Not enough historical data to train and test."
         )
 
     preprocessor = ColumnTransformer([
@@ -146,11 +152,19 @@ def train_model(df):
         ))
     ])
 
-    model.fit(train[features], train["transactions"])
-
-    test["predicted"] = np.maximum(
-        0, model.predict(test[features])
+    # Train on log-transformed transaction counts
+    model.fit(
+        train[features],
+        np.log1p(train["transactions"])
     )
+
+    # Predict on the test period and convert to original scale
+    test["predicted"] = np.maximum(
+        0,
+        np.expm1(model.predict(test[features]))
+    )
+
+    # Simple baseline: use the previous quarter's count
     test["baseline"] = test["lag1"]
 
     metrics = {
@@ -168,8 +182,11 @@ def train_model(df):
         ))
     }
 
-    # Retrain on all available historical data
-    model.fit(data[features], data["transactions"])
+    # Refit the model using all available labelled history
+    model.fit(
+        data[features],
+        np.log1p(data["transactions"])
+    )
 
     return model, data, test, metrics, features
 
@@ -204,11 +221,13 @@ try:
     c4.metric("Baseline RMSE", f"{metrics['Baseline RMSE']:,.0f}")
 
     if metrics["Model MAE"] < metrics["Baseline MAE"]:
-        st.success("Random Forest has lower MAE than the baseline.")
+        st.success(
+            "Random Forest has lower MAE than the baseline."
+        )
     else:
         st.warning(
             "Random Forest did not beat the baseline on MAE. "
-            "Consider this when interpreting the results."
+            "Use the measured results honestly."
         )
 
     st.subheader("Actual vs Predicted Transactions")
@@ -236,13 +255,17 @@ try:
     ax.set_ylabel("Predicted transaction count")
     ax.set_title("Test Set: Actual vs Predicted")
 
+    fig.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
 
     st.subheader("Explore a State")
 
     states = sorted(raw["state"].unique())
-    selected = st.selectbox("Choose an Indian state", states)
+    selected = st.selectbox(
+        "Choose an Indian state",
+        states
+    )
 
     state_history = (
         raw[raw["state"] == selected]
@@ -295,8 +318,12 @@ try:
             "rolling4": float(recent["transactions"].mean())
         }])
 
+        # Convert the model's log prediction back to counts
         forecast = max(
-            0, float(model.predict(input_row[features])[0])
+            0,
+            float(
+                np.expm1(model.predict(input_row[features])[0])
+            )
         )
 
         st.metric(
@@ -309,14 +336,20 @@ try:
             "PhonePe forecast."
         )
     else:
-        st.warning("Not enough history to forecast this state.")
+        st.warning(
+            "Not enough historical data to forecast this state."
+        )
 
     st.subheader("Test Predictions")
 
     st.dataframe(
         test[[
-            "state", "year", "quarter",
-            "transactions", "predicted", "baseline"
+            "state",
+            "year",
+            "quarter",
+            "transactions",
+            "predicted",
+            "baseline"
         ]].round(2),
         use_container_width=True
     )
@@ -333,12 +366,12 @@ try:
     )
 
     st.caption(
-        "Academic project using public, aggregated data. "
+        "Academic project using public aggregated data. "
         "This is not PhonePe's internal forecasting system."
     )
 
 except Exception as exc:
     st.error(f"The dashboard could not run: {exc}")
     st.info(
-        "Check the deployment logs for the full error details."
+        "Open Manage app and check the logs if the error continues."
     )
